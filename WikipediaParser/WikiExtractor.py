@@ -65,6 +65,7 @@ import cgi
 import fileinput
 import logging
 import os.path
+import os, glob
 import re  # TODO use regex when it will be standard
 import time
 import urllib
@@ -419,7 +420,7 @@ class Extractor(object):
 
     ##
     # Whether to preserve lists
-    keeplists = False
+    keepLists = False
 
     ##
     # Whether to output HTML instead of text
@@ -465,11 +466,13 @@ class Extractor(object):
         self.magicWords['currenttime'] = time.strftime('%H:%M:%S')
         text = self.clean()
         footer = "\n</doc>\n"
-        out.write(header)
+        if not Extractor.noMark:
+            out.write(header)
         for line in compact(text):
             out.write(line.encode('utf-8'))
             out.write('\n')
-        out.write(footer)
+        if not Extractor.noMark:
+            out.write(footer)
         errs = (self.template_title_errs,
                 self.recursion_exceeded_1_errs,
                 self.recursion_exceeded_2_errs,
@@ -2321,8 +2324,7 @@ class OutputSplitter(object):
 
 tagRE = re.compile(r'(.*?)<(/?\w+)[^>]*>(?:([^<]*)(<.*?>)?)?')
 #                    1     2               3      4
-
-
+pruneRE = re.compile(r'Category:.*|File:.*|Template:.*|Wikipedia:.*|MediaWiki:.*|Portal:.*|Draft:.*|List of .*|TimedText:.*|Help:.*|Book:.*|Module:.*|Topic:.*|.*(disambiguation)')
 def load_templates(file, output_file=None):
     """
     Load templates from :param file:.
@@ -2381,6 +2383,7 @@ def pages_from(input):
     ns = '0'
     last_id = None
     inText = False
+    prune = False
     redirect = False
     for line in input:
         line = line.decode('utf-8')
@@ -2395,10 +2398,13 @@ def pages_from(input):
         if tag == 'page':
             page = []
             redirect = False
+            prune = False
         elif tag == 'id' and not id: # skip nested <id>
             id = m.group(3)
         elif tag == 'title':
             title = m.group(3)
+            if pruneRE.match(title):
+                prune = True
         elif tag == 'ns':
             ns = m.group(3)
         elif tag == 'redirect':
@@ -2586,9 +2592,9 @@ def extract_process(i, jobs_queue, output_queue):
                 page = None              # free memory
                 e.extract(out)
                 text = out.getvalue()
-            except:
+            except e:
                 text = ''
-                logging.error('Processing page: %s %s', id, title)
+                logging.error('Processing page: %s %s, %s', id, title, e)
             output_queue.put((page_num, text))
             out.truncate(0)
         else:
@@ -2939,6 +2945,10 @@ def main():
                         help="compress output files using bzip")
 
     groupP = parser.add_argument_group('Processing')
+    groupP.add_argument("--no-mark", action="store_false",
+                        help="will not add the tag <doc> of each page")
+    groupP.add_argument("-dumpRE", default="*.bz2", metavar="ns1,ns2",
+                        help="accepted namespaces")
     groupP.add_argument("--html", action="store_true",
                         help="produce HTML output, subsumes --links")
     groupP.add_argument("-l", "--links", action="store_true",
@@ -2976,6 +2986,7 @@ def main():
     Extractor.keepSections = args.sections
     Extractor.keepLists = args.lists
     Extractor.toHTML = args.html
+    Extractor.noMark = args.no_mark
     if args.html:
         Extractor.keepLinks = True
 
@@ -3033,7 +3044,15 @@ def main():
             logging.error('Could not create: %s', output_path)
             return
 
-    process_dump(input_file, args.templates, output_path, file_size,
+    if os.path.isdir(input_file):
+        dump_files = glob.glob(os.path.join(input_file, args.dumpRE))
+        for i, dump_file in enumerate(dump_files):
+            out_dir = os.path.join(output_path, str(i))
+            process_dump(dump_file, args.templates, out_dir, file_size,
+                 args.compress, args.processes)
+            
+    else:
+        process_dump(input_file, args.templates, output_path, file_size,
                  args.compress, args.processes)
 
 
